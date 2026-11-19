@@ -6,7 +6,7 @@ import base64
 import hashlib
 import socket
 import webbrowser
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse, quote, unquote
 import requests
 import phonenumbers
 from phonenumbers import geocoder, carrier, timezone, number_type, PhoneNumberType
@@ -267,7 +267,7 @@ def email_osint():
     console.print(f"[green][+] Google Dork  :[/green] https://www.google.com/search?q={quote('\"' + email + '\"')}")
 
 
-# [5] DNS Records Lookup (A, AAAA, TXT, NS)
+# [5] DNS Records Lookup (A, AAAA)
 def dns_lookup():
     console.print("\n[bold yellow][5] DNS & IPv6 Resolution Lookup[/bold yellow]")
     domain = console.input("Enter domain (e.g., example.com): ").strip()
@@ -390,24 +390,67 @@ def subdomain_scanner():
             pass
 
 
-# [11] YouTube Channel OSINT
+# [11] YouTube Channel OSINT (Upgraded Multi-Pattern)
 def youtube_osint():
     console.print("\n[bold yellow][11] YouTube Channel Metadata OSINT[/bold yellow]")
     yt_in = console.input("Enter YouTube URL or @handle: ").strip()
+    if not yt_in:
+        console.print("[red][-] Input cannot be empty.[/red]")
+        return
+
     if yt_in.startswith("@"):
         url = f"https://www.youtube.com/{yt_in}"
     elif yt_in.startswith("http"):
         url = yt_in
     else:
         url = f"https://www.youtube.com/@{yt_in}"
+
     try:
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=8)
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=10,
+        )
         html = resp.text
-        cid = re.search(r'"channelId":"(UC[\w-]+)"', html)
-        title = re.search(r"<title>(.*?)</title>", html)
-        console.print(f"[green][+] Title        :[/green] {title.group(1) if title else 'Unknown'}")
-        console.print(f"[green][+] Channel ID   :[/green] {cid.group(1) if cid else 'Not found'}")
+
+        title_match = re.search(r"<title>(.*?)</title>", html)
+        title = title_match.group(1).strip() if title_match else "Unknown"
+
+        id_patterns = [
+            r'"channelId"\s*:\s*"(UC[\w-]+)"',
+            r'"externalId"\s*:\s*"(UC[\w-]+)"',
+            r'"browseId"\s*:\s*"(UC[\w-]+)"',
+            r'itemprop="channelId"\s+content="(UC[\w-]+)"',
+            r'https://www\.youtube\.com/channel/(UC[\w-]+)',
+        ]
+
+        channel_id = None
+        for pat in id_patterns:
+            m = re.search(pat, html)
+            if m:
+                channel_id = m.group(1)
+                break
+
+        handle_match = re.search(r'(@[\w.-]+)', url)
+        handle = handle_match.group(1) if handle_match else "N/A"
+
+        console.print(f"[green][+] Title        :[/green] {title}")
+        console.print(f"[green][+] Handle       :[/green] {handle}")
+        console.print(
+            f"[green][+] Channel ID   :[/green] {channel_id if channel_id else 'Hidden / Consent or Dynamic JS'}"
+        )
+        if channel_id:
+            console.print(
+                f"[green][+] Direct URL   :[/green] https://www.youtube.com/channel/{channel_id}"
+            )
+            console.print(
+                f"[green][+] RSS Feed     :[/green] https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+            )
         console.print(f"[green][+] Channels Tab :[/green] {url.rstrip('/')}/channels")
+        console.print(f"[green][+] About Tab    :[/green] {url.rstrip('/')}/about")
     except Exception as e:
         console.print(f"[red][-] YouTube fetch error: {e}[/red]")
 
@@ -456,7 +499,7 @@ def google_dork_generator():
     console.print("\n[bold yellow][14] OSINT Google Dork Query Builder[/bold yellow]")
     target = console.input("Enter target keyword, domain, or name: ").strip()
     dorks = [
-        f'site:{target}',
+        f"site:{target}",
         f'intext:"{target}"',
         f'"{target}" filetype:pdf OR filetype:xls OR filetype:docx',
         f'"{target}" inurl:admin OR inurl:login',
@@ -557,7 +600,6 @@ def url_codec():
     console.print("\n[bold yellow][20] URL Encoder / Decoder[/bold yellow]")
     mode = console.input("Choose (e)ncode or (d)ecode: ").strip().lower()
     data = console.input("Enter text/URL: ").strip()
-    from urllib.parse import unquote
     if mode.startswith("e"):
         console.print(f"[green][+] Encoded:[/green] {quote(data)}")
     else:
