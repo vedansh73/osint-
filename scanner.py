@@ -1,12 +1,16 @@
 import os
 import re
 import sys
+import ssl
 import json
 import base64
 import hashlib
 import socket
 import webbrowser
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, quote, unquote
+
 import requests
 import phonenumbers
 from phonenumbers import geocoder, carrier, timezone, number_type, PhoneNumberType
@@ -25,7 +29,7 @@ USER_AGENT = (
 def banner():
     console.print(
         Panel(
-            "[bold red]OSINT MASTER SUITE - 30 FEATURES RECON & INTELLIGENCE[/bold red]\n"
+            "[bold red]OSINT MASTER SUITE - EXTENDED RECON & INTELLIGENCE[/bold red]\n"
             "[cyan]Repo: https://github.com/vedansh73/osint-.git | Developer: Vedansh Srivastava[/cyan]",
             border_style="yellow",
         )
@@ -48,7 +52,6 @@ def fetch_ip_data(ip_query=""):
                 continue
             data = resp.json()
 
-            # ip-api.com format
             if "status" in data:
                 if data.get("status") == "success":
                     return {
@@ -67,7 +70,6 @@ def fetch_ip_data(ip_query=""):
                     }
                 continue
 
-            # ipapi.co format
             if "ip" in data and not data.get("error"):
                 return {
                     "ip": data.get("ip"),
@@ -84,7 +86,6 @@ def fetch_ip_data(ip_query=""):
                     "proxy_hosting": "N/A",
                 }
 
-            # ipinfo.io format
             if "ip" in data and "loc" in data:
                 loc_parts = str(data.get("loc", ",")).split(",")
                 return {
@@ -390,34 +391,36 @@ def subdomain_scanner():
             pass
 
 
-# [11] YouTube Channel OSINT (Upgraded Multi-Pattern)
+# [11] YouTube Channel OSINT (Extended Username / Handle Details)
 def youtube_osint():
-    console.print("\n[bold yellow][11] YouTube Channel Metadata OSINT[/bold yellow]")
-    yt_in = console.input("Enter YouTube URL or @handle: ").strip()
+    console.print("\n[bold yellow][11] YouTube Channel Extended OSINT[/bold yellow]")
+    yt_in = console.input("Enter YouTube username or @handle: ").strip()
     if not yt_in:
         console.print("[red][-] Input cannot be empty.[/red]")
         return
 
-    if yt_in.startswith("@"):
-        url = f"https://www.youtube.com/{yt_in}"
-    elif yt_in.startswith("http"):
-        url = yt_in
-    else:
-        url = f"https://www.youtube.com/@{yt_in}"
+    clean_handle = yt_in.lstrip("@").strip()
+    url = f"https://www.youtube.com/@{clean_handle}" if not yt_in.startswith("http") else yt_in.rstrip("/")
+
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 
     try:
-        resp = requests.get(
-            url,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-            timeout=10,
-        )
+        console.print(f"[cyan][*] Fetching public channel intelligence for @{clean_handle}...[/cyan]")
+        resp = requests.get(url, headers=headers, timeout=10)
         html = resp.text
 
         title_match = re.search(r"<title>(.*?)</title>", html)
-        title = title_match.group(1).strip() if title_match else "Unknown"
+        raw_title = title_match.group(1).strip() if title_match else "Unknown"
+        channel_name = raw_title.replace(" - YouTube", "").strip()
+
+        desc_match = re.search(r'<meta\s+name="description"\s+content="(.*?)"', html)
+        description = desc_match.group(1).strip() if desc_match else "Not found / Hidden"
+
+        kw_match = re.search(r'<meta\s+name="keywords"\s+content="(.*?)"', html)
+        keywords = kw_match.group(1).strip() if kw_match else "Not found"
 
         id_patterns = [
             r'"channelId"\s*:\s*"(UC[\w-]+)"',
@@ -426,7 +429,6 @@ def youtube_osint():
             r'itemprop="channelId"\s+content="(UC[\w-]+)"',
             r'https://www\.youtube\.com/channel/(UC[\w-]+)',
         ]
-
         channel_id = None
         for pat in id_patterns:
             m = re.search(pat, html)
@@ -434,25 +436,53 @@ def youtube_osint():
                 channel_id = m.group(1)
                 break
 
-        handle_match = re.search(r'(@[\w.-]+)', url)
-        handle = handle_match.group(1) if handle_match else "N/A"
+        table = Table(title=f"YouTube OSINT: @{clean_handle}", border_style="red")
+        table.add_column("Field", style="cyan")
+        table.add_column("Value", style="white")
 
-        console.print(f"[green][+] Title        :[/green] {title}")
-        console.print(f"[green][+] Handle       :[/green] {handle}")
-        console.print(
-            f"[green][+] Channel ID   :[/green] {channel_id if channel_id else 'Hidden / Consent or Dynamic JS'}"
-        )
+        table.add_row("Channel Name", channel_name)
+        table.add_row("Handle", f"@{clean_handle}")
+        table.add_row("Channel URL", url)
+        table.add_row("Channel ID", channel_id or "Not found in static HTML")
+        table.add_row("Description", description[:180] + ("..." if len(description) > 180 else ""))
+        table.add_row("Keywords", keywords[:140] + ("..." if len(keywords) > 140 else ""))
+
         if channel_id:
-            console.print(
-                f"[green][+] Direct URL   :[/green] https://www.youtube.com/channel/{channel_id}"
-            )
-            console.print(
-                f"[green][+] RSS Feed     :[/green] https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-            )
-        console.print(f"[green][+] Channels Tab :[/green] {url.rstrip('/')}/channels")
-        console.print(f"[green][+] About Tab    :[/green] {url.rstrip('/')}/about")
+            rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+            table.add_row("Direct Channel URL", f"https://www.youtube.com/channel/{channel_id}")
+            table.add_row("RSS Feed URL", rss_url)
+
+        table.add_row("Videos / Shorts / Live", f"{url}/videos | {url}/shorts | {url}/streams")
+        table.add_row("Channels / About", f"{url}/channels | {url}/about")
+        table.add_row("Google Mentions Dork", f'https://www.google.com/search?q={quote(f"@{clean_handle} site:youtube.com")}')
+        console.print(table)
+
+        if channel_id:
+            rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+            try:
+                rss_resp = requests.get(rss_url, headers=headers, timeout=8)
+                if rss_resp.status_code == 200 and "<feed" in rss_resp.text:
+                    root = ET.fromstring(rss_resp.text)
+                    ns = {
+                        "atom": "http://www.w3.org/2005/Atom",
+                        "yt": "http://www.youtube.com/xml/schemas/yt/2015",
+                    }
+                    entries = root.findall("atom:entry", ns)[:5]
+                    if entries:
+                        console.print("\n[bold green][+] Recent Public Uploads (via RSS):[/bold green]")
+                        for idx, entry in enumerate(entries, 1):
+                            v_title = entry.findtext("atom:title", default="Untitled", namespaces=ns)
+                            v_id = entry.findtext("yt:videoId", default="", namespaces=ns)
+                            pub_date = entry.findtext("atom:published", default="", namespaces=ns)[:10]
+                            v_link = f"https://www.youtube.com/watch?v={v_id}" if v_id else "N/A"
+                            console.print(f"    {idx}. [{pub_date}] {v_title} -> {v_link}")
+                    else:
+                        console.print("[yellow][!] RSS feed has no public video entries.[/yellow]")
+            except Exception as rss_err:
+                console.print(f"[yellow][!] RSS parse note: {rss_err}[/yellow]")
+
     except Exception as e:
-        console.print(f"[red][-] YouTube fetch error: {e}[/red]")
+        console.print(f"[red][-] YouTube OSINT error: {e}[/red]")
 
 
 # [12] GitHub User OSINT
@@ -708,6 +738,185 @@ def open_repo():
     webbrowser.open("https://github.com/vedansh73/osint-.git")
 
 
+# [31] Fast Multi-Threaded Username OSINT
+def fast_username_osint():
+    console.print("\n[bold yellow][31] Fast Multi-Threaded Username OSINT[/bold yellow]")
+    username = console.input("Enter target username: ").strip()
+    if not username:
+        console.print("[red][-] Username cannot be empty.[/red]")
+        return
+
+    sites = {
+        "GitHub": f"https://github.com/{username}",
+        "GitLab": f"https://gitlab.com/{username}",
+        "Reddit": f"https://www.reddit.com/user/{username}/",
+        "Instagram": f"https://www.instagram.com/{username}/",
+        "Pinterest": f"https://www.pinterest.com/{username}/",
+        "Medium": f"https://medium.com/@{username}",
+        "Dev.to": f"https://dev.to/{username}",
+        "YouTube": f"https://www.youtube.com/@{username}",
+        "Twitch": f"https://www.twitch.tv/{username}",
+        "Steam": f"https://steamcommunity.com/id/{username}",
+        "SoundCloud": f"https://soundcloud.com/{username}",
+        "Spotify": f"https://open.spotify.com/user/{username}",
+        "Keybase": f"https://keybase.io/{username}",
+        "DockerHub": f"https://hub.docker.com/u/{username}",
+        "HackerNews": f"https://news.ycombinator.com/user?id={username}",
+        "Replit": f"https://replit.com/@{username}",
+        "Kaggle": f"https://www.kaggle.com/{username}",
+        "CodePen": f"https://codepen.io/{username}",
+        "TryHackMe": f"https://tryhackme.com/p/{username}",
+        "Patreon": f"https://www.patreon.com/{username}",
+        "Vimeo": f"https://vimeo.com/{username}",
+        "Linktree": f"https://linktr.ee/{username}",
+        "Chess.com": f"https://www.chess.com/member/{username}",
+        "Scratch": f"https://scratch.mit.edu/users/{username}/",
+    }
+
+    def check_site(name, url):
+        try:
+            r = requests.get(
+                url,
+                headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
+                timeout=6,
+                allow_redirects=True,
+            )
+            low = r.text.lower()
+            not_found = (
+                r.status_code != 200
+                or "page not found" in low
+                or "user not found" in low
+                or "doesn't exist" in low
+                or "sorry, nobody on reddit goes by that name" in low
+                or (name == "Instagram" and "accounts/login" in r.url.lower())
+            )
+            return name, url, (not not_found)
+        except Exception:
+            return name, url, False
+
+    console.print(f"[cyan][*] Fast-scanning {len(sites)} platforms for '{username}'...[/cyan]\n")
+    found = []
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = [pool.submit(check_site, n, u) for n, u in sites.items()]
+        for fut in as_completed(futures):
+            name, url, ok = fut.result()
+            if ok:
+                found.append((name, url))
+                console.print(f"    [bold green][+] {name:<14}:[/bold green] {url}")
+
+    console.print(f"\n[bold cyan][*] Done! Found {len(found)}/{len(sites)} public matches.[/bold cyan]")
+
+
+# [32] SSL Certificate Inspector + crt.sh Subdomains
+def ssl_and_crtsh_recon():
+    console.print("\n[bold yellow][32] SSL Certificate & crt.sh Subdomain Recon[/bold yellow]")
+    domain = console.input("Enter domain (e.g., example.com): ").strip()
+    domain = urlparse(domain).netloc if "://" in domain else domain.split("/")[0]
+    if not domain:
+        console.print("[red][-] Domain cannot be empty.[/red]")
+        return
+
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((domain, 443), timeout=6) as sock:
+            with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
+                cert = ssock.getpeercert()
+                issuer = dict(x[0] for x in cert.get("issuer", []))
+                subject = dict(x[0] for x in cert.get("subject", []))
+                console.print(f"[green][+] Cert Common Name :[/green] {subject.get('commonName', 'N/A')}")
+                console.print(f"[green][+] Cert Issuer      :[/green] {issuer.get('organizationName', 'N/A')}")
+                console.print(f"[green][+] Valid From       :[/green] {cert.get('notBefore', 'N/A')}")
+                console.print(f"[green][+] Valid Until      :[/green] {cert.get('notAfter', 'N/A')}")
+    except Exception as e:
+        console.print(f"[yellow][!] SSL check note: {e}[/yellow]")
+
+    try:
+        r = requests.get(
+            f"https://crt.sh/?q=%25.{quote(domain)}&output=json",
+            headers={"User-Agent": USER_AGENT},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            subs = set()
+            for item in r.json():
+                for line in str(item.get("name_value", "")).splitlines():
+                    clean = line.strip().lstrip("*.")
+                    if clean.endswith(domain):
+                        subs.add(clean)
+            sorted_subs = sorted(subs)[:20]
+            console.print(f"[green][+] crt.sh Subdomains ({len(subs)} total, showing top {len(sorted_subs)}):[/green]")
+            for s in sorted_subs:
+                console.print(f"    • {s}")
+    except Exception as e:
+        console.print(f"[yellow][!] crt.sh lookup note: {e}[/yellow]")
+
+
+# [33] Local Image File Metadata & Hash
+def image_file_forensics():
+    console.print("\n[bold yellow][33] Local Image File Metadata & Hash[/bold yellow]")
+    img_path = console.input("Enter local image path (e.g., photo.jpg): ").strip().strip('"')
+    if not os.path.isfile(img_path):
+        console.print("[red][-] File not found.[/red]")
+        return
+
+    with open(img_path, "rb") as f:
+        raw_bytes = f.read()
+
+    console.print(f"[green][+] File Size :[/green] {len(raw_bytes)} bytes")
+    console.print(f"[green][+] MD5       :[/green] {hashlib.md5(raw_bytes).hexdigest()}")
+    console.print(f"[green][+] SHA256    :[/green] {hashlib.sha256(raw_bytes).hexdigest()}")
+
+    try:
+        from PIL import Image, ExifTags
+        img = Image.open(img_path)
+        console.print(f"[green][+] Format    :[/green] {img.format} | Size: {img.size} | Mode: {img.mode}")
+        exif = img.getexif()
+        if exif:
+            for tag_id, val in exif.items():
+                tag_name = ExifTags.TAGS.get(tag_id, tag_id)
+                console.print(f"    • {tag_name}: {val}")
+        else:
+            console.print("[yellow][!] No EXIF tags found in image.[/yellow]")
+    except ImportError:
+        console.print("[yellow][!] Tip: Install Pillow ('pip install Pillow') to read EXIF tags.[/yellow]")
+    except Exception as e:
+        console.print(f"[yellow][!] Image inspect note: {e}[/yellow]")
+
+
+# [34] Deep WhatsApp Public Link & Dork Helper
+def deep_whatsapp_osint():
+    console.print("\n[bold yellow][34] Deep WhatsApp Public Link & Dork Helper[/bold yellow]")
+    raw = console.input("Enter phone with country code (e.g., +919876543210): ").strip()
+    try:
+        parsed = phonenumbers.parse(raw, None)
+        valid = phonenumbers.is_valid_number(parsed)
+        e164 = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+        intl = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
+        digits = re.sub(r"\D", "", e164)
+        region = geocoder.description_for_number(parsed, "en") or "Unknown"
+        sim_carrier = carrier.name_for_number(parsed, "en") or "Unknown"
+
+        wa_me = f"https://wa.me/{digits}"
+        wa_api = f"https://api.whatsapp.com/send?phone={digits}"
+        dork_wa_me = f"https://www.google.com/search?q={quote(f'site:wa.me/{digits}')}"
+        dork_num = f"https://www.google.com/search?q={quote(f'\"{e164}\" OR \"{intl}\" OR \"{digits}\" whatsapp')}"
+
+        table = Table(title="WhatsApp Public OSINT Helper", border_style="green")
+        table.add_column("Field", style="cyan")
+        table.add_column("Value", style="white")
+        table.add_row("E.164 Number", e164)
+        table.add_row("Valid Format", str(valid))
+        table.add_row("Region / Carrier", f"{region} | {sim_carrier}")
+        table.add_row("wa.me Link", wa_me)
+        table.add_row("API Send Link", wa_api)
+        table.add_row("wa.me Google Dork", dork_wa_me)
+        table.add_row("Public Mentions Dork", dork_num)
+        console.print(table)
+        console.print("[dim]Note: Private WhatsApp chats, contacts, and hidden profile details cannot be accessed via OSINT.[/dim]")
+    except Exception as e:
+        console.print(f"[red][-] WhatsApp helper error: {e}[/red]")
+
+
 MENU_ACTIONS = {
     "1": ("Deep Phone Number OSINT", phone_osint_deep),
     "2": ("Wide Username OSINT (25+ Sites)", username_osint_wide),
@@ -719,7 +928,7 @@ MENU_ACTIONS = {
     "8": ("WAF / CDN Detector", waf_detector),
     "9": ("Common TCP Port Scanner", common_port_scanner),
     "10": ("Subdomain Enumeration", subdomain_scanner),
-    "11": ("YouTube Channel OSINT", youtube_osint),
+    "11": ("YouTube Channel Extended OSINT", youtube_osint),
     "12": ("GitHub Profile OSINT", github_osint),
     "13": ("Reddit Account OSINT", reddit_osint),
     "14": ("Google Dork Generator", google_dork_generator),
@@ -739,6 +948,10 @@ MENU_ACTIONS = {
     "28": ("Join Discord Community", open_discord),
     "29": ("Join Telegram Security Channel", open_telegram),
     "30": ("Open OSINT GitHub Repo", open_repo),
+    "31": ("Fast Multi-Threaded Username OSINT", fast_username_osint),
+    "32": ("SSL Certificate & crt.sh Recon", ssl_and_crtsh_recon),
+    "33": ("Local Image File Metadata & Hash", image_file_forensics),
+    "34": ("Deep WhatsApp Public Link & Dork Helper", deep_whatsapp_osint),
 }
 
 
@@ -750,7 +963,7 @@ def main():
             console.print(f"[{key:>2}] {label}")
         console.print("[ 0] Exit")
 
-        choice = console.input("\n[bold cyan]Select an option (0-30): [/bold cyan]").strip()
+        choice = console.input(f"\n[bold cyan]Select an option (0-{len(MENU_ACTIONS)}): [/bold cyan]").strip()
         if choice == "0":
             console.print("[bold red]Exiting OSINT Master Suite. Stay ethical![/bold red]")
             sys.exit(0)
@@ -758,7 +971,7 @@ def main():
             _, fn = MENU_ACTIONS[choice]
             fn()
         else:
-            console.print("[red][-] Invalid option. Choose between 0 and 30.[/red]")
+            console.print(f"[red][-] Invalid option. Choose between 0 and {len(MENU_ACTIONS)}.[/red]")
 
         console.input("\n[dim]Press Enter to return to menu...[/dim]")
 
